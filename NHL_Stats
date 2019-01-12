@@ -1,0 +1,111 @@
+import numpy as np
+import pandas as pd
+import requests
+import json
+from sklearn import preprocessing
+from sklearn.preprocessing import OneHotEncoder
+import copy
+import matplotlib.pyplot as plt
+
+stats_games_2017 = []
+stats_games_2018 = []
+print('Getting data...')
+for game_id in range(2017020001, 2017020050, 1):
+    url = 'https://statsapi.web.nhl.com/api/v1/game/{}/boxscore'.format(game_id)
+    r_2017 = requests.get(url)
+    stat_data_2017 = r_2017.json()
+
+    for homeaway in ['home','away']:
+        
+        stat_dict_2017 = stat_data_2017.get('teams').get(homeaway).get('teamStats').get('teamSkaterStats')
+        stat_dict_2017['team'] = stat_data_2017.get('teams').get(homeaway).get('team').get('name')
+        stat_dict_2017['teamID'] = stat_data_2017.get('teams').get(homeaway).get('team').get('id')
+        stat_dict_2017['homeaway'] = homeaway
+        stat_dict_2017['game_id'] = game_id
+        stats_games_2017.append(stat_dict_2017)
+        
+df_stat_2017 = pd.DataFrame(stats_games_2017)
+        
+for game_id in range(2018020001, 2018020030, 1):
+    url = 'https://statsapi.web.nhl.com/api/v1/game/{}/boxscore'.format(game_id)
+    r_2018 = requests.get(url)
+    stat_data_2018 = r_2018.json()
+
+    for homeaway in ['home','away']:
+        
+        stat_dict_2018 = stat_data_2018.get('teams').get(homeaway).get('teamStats').get('teamSkaterStats')
+        stat_dict_2018['team'] = stat_data_2018.get('teams').get(homeaway).get('team').get('name')
+        stat_dict_2018['teamID'] = stat_data_2018.get('teams').get(homeaway).get('team').get('id')
+        stat_dict_2018['homeaway'] = homeaway
+        stat_dict_2018['game_id'] = game_id
+        stats_games_2018.append(stat_dict_2018)
+
+
+
+df_stat_2018 = pd.DataFrame(stats_games_2018)
+df_stat = df_stat_2017.append(df_stat_2018)
+print('Done')
+
+df_stat['Won'] = df_stat.groupby('game_id')['goals'].apply(lambda g: (g == g.max()).map({True: 1, False: 0}))
+df_stat = df_stat.reset_index(drop=True)
+df_stat = pd.get_dummies(df_stat, columns=['homeaway'])
+
+is_home = df_stat['homeaway_home'] == 1                                                                                                                                                                                                                   
+home = df_stat[is_home].drop('homeaway_away', axis=1).add_prefix('h_').rename(columns={'h_game_id':'game_id'})                                                                                                                                              
+away = df_stat[~is_home].drop(['Won', 'homeaway_home', 'homeaway_away'], axis=1).add_prefix('a_').rename(columns={'a_game_id':'game_id'})                                                                                                                       
+df_stat = pd.merge(home, away, on='game_id') 
+
+flatten = [e for p in zip(df_stat.h_team, df_stat.a_team) for e in p]
+counts = pd.DataFrame((pd.Series(flatten).groupby(flatten).cumcount() + 1).values.reshape(-1, 2),
+                      columns=['a_games', 'h_games'])
+
+df_stat = (pd.concat([df_stat, counts], axis=1))
+
+df_stat['a_Won'] = 1 - df_stat['h_Won']
+
+df_stat["HTWins"] = 0
+df_stat["ATWins"] = 0
+
+homeWinsAwayWins = {}
+homeAwayCount = {'home':0, 'away':0}
+
+for index, row in df_stat.iterrows():
+    homeTeam = row['h_team']
+    awayTeam = row['a_team']
+
+    if homeTeam not in homeWinsAwayWins:
+        homeWinsAwayWins[homeTeam] = copy.deepcopy(homeAwayCount)
+    if awayTeam not in homeWinsAwayWins:
+        homeWinsAwayWins[awayTeam] = copy.deepcopy(homeAwayCount)
+
+    df_stat.loc[index,"HTWins"] = homeWinsAwayWins[homeTeam]['home'] + homeWinsAwayWins[homeTeam]['away']
+    df_stat.loc[index,"ATWins"] = homeWinsAwayWins[awayTeam]['home'] + homeWinsAwayWins[awayTeam]['away']
+
+    homeWin = row['h_Won']
+    awayWin = row['a_Won']
+    if homeWin:
+        homeWinsAwayWins[homeTeam]['home'] += 1
+    elif awayWin:
+        homeWinsAwayWins[awayTeam]['away'] += 1
+        
+        
+df_stat['h_WinPerc'] = df_stat['HTWins'] / df_stat['h_games']
+df_stat['a_WinPerc'] = df_stat['ATWins'] / df_stat['a_games']
+
+df_stat['h_TurnDiff'] = df_stat['h_takeaways'] - df_stat['h_giveaways']
+df_stat['a_TurnDiff'] = df_stat['a_takeaways'] - df_stat['a_giveaways']
+
+df_stat['h_PythWins'] = (df_stat['h_goals'] ** 2.37) / (((df_stat['h_goals'] ** 2.37) + (df_stat['a_goals'] ** 2.37)))
+df_stat['a_PythWins'] = (df_stat['a_goals'] ** 2.37) / (((df_stat['a_goals'] ** 2.37) + (df_stat['h_goals'] ** 2.37)))
+
+df_stat['h_GoalPercentege'] = df_stat['h_goals']/df_stat['h_shots']
+df_stat['h_SavingsPercentage'] = 1 - df_stat['a_goals']/df_stat['a_shots']
+df_stat['h_ClearSavingsPercentage'] = 1 - (df_stat['a_goals']/(df_stat['a_shots'] - df_stat['h_blocked']))
+df_stat['h_PenaltyKill'] = 1 - (df_stat['a_powerPlayGoals']/df_stat['a_powerPlayOpportunities'])
+df_stat['h_ShotSuccess'] = 1 - (df_stat['a_blocked']/df_stat['h_shots'])
+
+df_stat['a_GoalPercentege'] = df_stat['a_goals']/df_stat['a_shots']
+df_stat['a_SavingsPercentage'] = 1 - df_stat['h_goals']/df_stat['h_shots']
+df_stat['a_ClearSavingsPercentage'] = 1 - df_stat['h_goals']/(df_stat['h_shots'] - df_stat['a_blocked'])
+df_stat['a_PenaltyKill'] = 1 - (df_stat['h_powerPlayGoals']/df_stat['h_powerPlayOpportunities'])
+df_stat['a_ShotSuccess'] = 1 - (df_stat['h_blocked']/df_stat['a_shots'])
